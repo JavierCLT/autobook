@@ -54,6 +54,9 @@ class StorySpec(ArtifactModel):
     timeline_window: str
     premise_core: str
     escalation_model: str
+    emotional_engine: str
+    adversarial_engine: str
+    moral_fault_line: str
     ending_shape: str
     style_guide: StyleGuide
     cast: List[CharacterCard] = Field(default_factory=list)
@@ -100,15 +103,28 @@ class SceneCard(ArtifactModel):
     location: str
     time_marker: str
     pov_character: str
+
     purpose: str
     conflict: str
     pressure_source: str
     emotional_turn: str
     revelation_or_shift: str
+
+    scene_desire: str
+    scene_fear: str
+    secret_pressure: str
+    subtext_engine: str
+    power_shift: str
+    relationship_delta: str
+    cost_paid: str
+    suspicion_delta: str
+    sensory_anchor: str
+
     continuity_inputs: List[str] = Field(default_factory=list)
     continuity_outputs: List[str] = Field(default_factory=list)
     required_entities: List[str] = Field(default_factory=list)
     forbidden_entities: List[str] = Field(default_factory=list)
+
     ending_mode: str
     target_words: int
 
@@ -127,6 +143,9 @@ class ContinuityState(ArtifactModel):
     known_facts: List[str] = Field(default_factory=list)
     open_threads: List[str] = Field(default_factory=list)
     relationship_state: List[str] = Field(default_factory=list)
+    suspicion_state: List[str] = Field(default_factory=list)
+    leverage_state: List[str] = Field(default_factory=list)
+    moral_lines_crossed: List[str] = Field(default_factory=list)
     injuries_or_costs: List[str] = Field(default_factory=list)
     evidence_or_objects: List[str] = Field(default_factory=list)
     unresolved_promises: List[str] = Field(default_factory=list)
@@ -144,6 +163,9 @@ class ContinuityUpdate(ArtifactModel):
     open_threads_to_add: List[str] = Field(default_factory=list)
     open_threads_to_close: List[str] = Field(default_factory=list)
     relationship_updates: List[str] = Field(default_factory=list)
+    suspicion_updates: List[str] = Field(default_factory=list)
+    leverage_updates: List[str] = Field(default_factory=list)
+    moral_lines_crossed_to_add: List[str] = Field(default_factory=list)
     injuries_or_costs_to_add: List[str] = Field(default_factory=list)
     evidence_or_objects_to_add: List[str] = Field(default_factory=list)
     unresolved_promises_to_add: List[str] = Field(default_factory=list)
@@ -204,8 +226,13 @@ class GlobalQaReport(ArtifactModel):
 
     pass_fail: bool
     hook_strength_score: int = Field(ge=1, le=5)
+    midpoint_turn_score: int = Field(ge=1, le=5)
+    climax_payoff_score: int = Field(ge=1, le=5)
     ending_payoff_score: int = Field(ge=1, le=5)
+    relationship_progression_score: int = Field(ge=1, le=5)
+    antagonist_pressure_score: int = Field(ge=1, le=5)
     continuity_score: int = Field(ge=1, le=5)
+    emotional_aftershock_score: int = Field(ge=1, le=5)
     boredom_risk_score: int = Field(ge=1, le=5)
     voice_consistency_score: int = Field(ge=1, le=5)
     ai_smell_score: int = Field(ge=1, le=5)

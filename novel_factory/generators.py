@@ -175,45 +175,108 @@ class NovelGenerator:
         """Updates continuity deterministically from the locked scene contract."""
 
         facts_to_add = list(scene_card.continuity_outputs)
-        open_threads_to_add = [scene_card.revelation_or_shift, scene_card.pressure_source]
-        relationship_updates = [f"{scene_card.pov_character}: {scene_card.emotional_turn}"]
-        costs_to_add = self._select_matching_lines(
-            scene_card.continuity_outputs + [scene_card.conflict, scene_card.pressure_source],
-            keywords=("cost", "risk", "threat", "exposure", "loss", "injury", "suspicion"),
+
+        open_threads_to_add = self._merge_candidate_updates(
+            [
+                scene_card.revelation_or_shift,
+                scene_card.pressure_source,
+                scene_card.secret_pressure,
+            ]
         )
+
+        relationship_updates = self._merge_candidate_updates(
+            [
+                scene_card.relationship_delta,
+                f"{scene_card.pov_character}: {scene_card.emotional_turn}",
+            ]
+        )
+
+        suspicion_updates = self._merge_candidate_updates(
+            [scene_card.suspicion_delta]
+        )
+
+        leverage_updates = self._merge_candidate_updates(
+            [scene_card.power_shift]
+        )
+
+        moral_lines_crossed_to_add = self._detect_moral_line_crossings(
+            scene_card=scene_card,
+            scene_text=scene_text,
+        )
+
+        costs_to_add = self._merge_candidate_updates(
+            [scene_card.cost_paid]
+            + self._select_matching_lines(
+                scene_card.continuity_outputs
+                + [scene_card.conflict, scene_card.pressure_source, scene_card.secret_pressure],
+                keywords=(
+                    "cost",
+                    "risk",
+                    "threat",
+                    "exposure",
+                    "loss",
+                    "injury",
+                    "damage",
+                    "suspicion",
+                    "compromise",
+                    "sacrifice",
+                ),
+            )
+        )
+
         evidence_to_add = self._extract_evidence_like_items(
-            scene_card.required_entities + scene_card.continuity_outputs
+            scene_card.required_entities
+            + scene_card.continuity_outputs
+            + [scene_card.sensory_anchor]
         )
+
         promises_to_add = self._select_matching_lines(
-            scene_card.continuity_outputs + [scene_card.ending_mode],
-            keywords=("will", "must", "needs to", "promise", "plan", "agrees to"),
+            scene_card.continuity_outputs
+            + [scene_card.ending_mode, scene_card.scene_desire, scene_card.scene_fear],
+            keywords=("will", "must", "needs to", "promise", "plan", "agrees to", "vows to"),
         )
+
         recent_scene_summary = self._build_scene_summary(scene_card)
 
         return ContinuityState(
             current_day=scene_card.time_marker.strip() or continuity_state.current_day,
             current_location=scene_card.location.strip() or continuity_state.current_location,
-            known_facts=self._merge_list(continuity_state.known_facts, facts_to_add, limit=40),
-            open_threads=self._merge_list(continuity_state.open_threads, open_threads_to_add, limit=20),
+            known_facts=self._merge_list(continuity_state.known_facts, facts_to_add, limit=50),
+            open_threads=self._merge_list(continuity_state.open_threads, open_threads_to_add, limit=25),
             relationship_state=self._merge_list(
                 continuity_state.relationship_state,
                 relationship_updates,
+                limit=25,
+            ),
+            suspicion_state=self._merge_list(
+                continuity_state.suspicion_state,
+                suspicion_updates,
+                limit=25,
+            ),
+            leverage_state=self._merge_list(
+                continuity_state.leverage_state,
+                leverage_updates,
+                limit=25,
+            ),
+            moral_lines_crossed=self._merge_list(
+                continuity_state.moral_lines_crossed,
+                moral_lines_crossed_to_add,
                 limit=20,
             ),
             injuries_or_costs=self._merge_list(
                 continuity_state.injuries_or_costs,
                 costs_to_add,
-                limit=20,
+                limit=25,
             ),
             evidence_or_objects=self._merge_list(
                 continuity_state.evidence_or_objects,
                 evidence_to_add,
-                limit=25,
+                limit=30,
             ),
             unresolved_promises=self._merge_list(
                 continuity_state.unresolved_promises,
                 promises_to_add,
-                limit=20,
+                limit=25,
             ),
             disallowed_entities=self._merge_list(
                 continuity_state.disallowed_entities,
@@ -238,7 +301,7 @@ class NovelGenerator:
         """Runs a targeted repair on an already approved scene."""
 
         return self.llm.text(
-            system_prompt=scene_draft_system_prompt(),
+            system_prompt=scene_draft_system_prompt(story_spec),
             user_prompt=repair_scene_user_prompt(
                 story_spec=story_spec,
                 outline=outline,
@@ -253,6 +316,90 @@ class NovelGenerator:
             temperature=self.config.rewriting_temperature,
             max_output_tokens=7_000,
         )
+
+    def _merge_candidate_updates(self, values: list[str]) -> list[str]:
+        """Normalizes candidate status strings and drops empty placeholders."""
+
+        cleaned: list[str] = []
+        for value in values:
+            normalized = re.sub(r"\s+", " ", value or "").strip()
+            if not normalized:
+                continue
+            if normalized.lower() in {"none", "n/a", "no change", "unchanged"}:
+                continue
+            if normalized not in cleaned:
+                cleaned.append(normalized)
+        return cleaned
+
+    def _detect_moral_line_crossings(
+        self,
+        *,
+        scene_card: SceneCard,
+        scene_text: str,
+    ) -> list[str]:
+        """Infers irreversible ethical thresholds crossed in the scene."""
+
+        candidates = [
+            scene_card.cost_paid,
+            scene_card.secret_pressure,
+            scene_card.revelation_or_shift,
+            scene_card.power_shift,
+            scene_card.suspicion_delta,
+            scene_card.relationship_delta,
+        ]
+
+        trigger_patterns = (
+            r"\blie\b",
+            r"\blies\b",
+            r"\blied\b",
+            r"\bforges?\b",
+            r"\bsteals?\b",
+            r"\btheft\b",
+            r"\bdeceiv(?:e|es|ed|ing)\b",
+            r"\bdeception\b",
+            r"\bbetray(?:s|ed|al)?\b",
+            r"\bsabotag(?:e|es|ed|ing)\b",
+            r"\btamper(?:s|ed|ing)?\b",
+            r"\bhide\s+evidence\b",
+            r"\bconceal(?:s|ed|ing)?\b",
+            r"\bcover-?up\b",
+            r"\bcrosses?\s+a\s+line\b",
+            r"\bbreaks?\s+protocol\b",
+            r"\bviolates?\s+policy\b",
+            r"\bdestroys?\s+trust\b",
+        )
+
+        def _matches_any_trigger(text: str) -> bool:
+            lowered = (text or "").lower()
+            return any(re.search(pattern, lowered) for pattern in trigger_patterns)
+
+        def _contains_word(text: str, word: str) -> bool:
+            return bool(re.search(rf"\b{re.escape(word.lower())}\b", text.lower()))
+
+        hits = []
+        for candidate in candidates:
+            if _matches_any_trigger(candidate):
+                hits.append(candidate.strip())
+
+        text_lower = scene_text.lower()
+        text_triggers = [
+            ("Daniel lies to Elena", ("daniel", "elena"), (r"\blie\b", r"\blies\b", r"\blied\b")),
+            ("Daniel conceals evidence", ("daniel", "evidence"), (r"\bconceal(?:s|ed|ing)?\b", r"\bhide\s+evidence\b")),
+            ("Daniel tampers with bank logic", ("daniel", "bank"), (r"\btamper(?:s|ed|ing)?\b",)),
+            ("Daniel crosses a professional line", ("daniel", "policy"), (r"\bviolates?\b", r"\bbreaks?\s+protocol\b")),
+        ]
+        for label, required_terms, trigger_regexes in text_triggers:
+            if all(_contains_word(text_lower, term) for term in required_terms) and any(
+                re.search(pattern, text_lower) for pattern in trigger_regexes
+            ):
+                hits.append(label)
+
+        deduped: list[str] = []
+        for hit in hits:
+            normalized = re.sub(r"\s+", " ", hit).strip()
+            if normalized and normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
 
     def _normalize_scene_cards(
         self,
@@ -288,7 +435,7 @@ class NovelGenerator:
 
         merged = list(current)
         for item in additions:
-            cleaned = item.strip()
+            cleaned = re.sub(r"\s+", " ", item or "").strip()
             if cleaned and cleaned not in merged:
                 merged.append(cleaned)
         return merged[-limit:]
@@ -323,6 +470,13 @@ class NovelGenerator:
             "provision",
             "model",
             "statement",
+            "notebook",
+            "spreadsheet",
+            "reserve",
+            "reconciliation",
+            "exception",
+            "ticket",
+            "memo",
         )
         selected = []
         for value in values:
@@ -335,7 +489,7 @@ class NovelGenerator:
         """Builds a short operational summary from the scene card."""
 
         summary = (
-            f"{scene_card.pov_character} in {scene_card.location} faces {scene_card.conflict}; "
-            f"{scene_card.revelation_or_shift.lower()}."
+            f"{scene_card.pov_character} in {scene_card.location} pursues {scene_card.scene_desire}; "
+            f"{scene_card.power_shift.lower()} after {scene_card.revelation_or_shift.lower()}."
         )
         return re.sub(r"\s+", " ", summary).strip()[:220]

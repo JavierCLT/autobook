@@ -427,6 +427,7 @@ class SceneValidator:
             "setting",
             "demand",
             "arrangement",
+            "ritual",
         )
         return any(marker in lower_entity for marker in abstract_markers)
 
