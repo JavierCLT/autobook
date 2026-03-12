@@ -285,6 +285,13 @@ class GlobalQaReport(ArtifactModel):
     repair_targets: List[RepairTarget] = Field(default_factory=list)
 
 
+class BookIntake(ArtifactModel):
+    """Parsed markdown intake template plus normalized field map."""
+
+    raw_markdown: str
+    fields: Dict[str, str] = Field(default_factory=dict)
+
+
 class RunLogEvent(ArtifactModel):
     """One append-only JSONL log entry for the run."""
 

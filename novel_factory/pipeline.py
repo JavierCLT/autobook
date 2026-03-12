@@ -10,10 +10,12 @@ from typing import Callable
 
 from novel_factory.config import AppConfig
 from novel_factory.generators import NovelGenerator
+from novel_factory.intake import parse_book_intake
 from novel_factory.judges import GlobalJudge, SceneJudge
 from novel_factory.llm import OpenAIResponsesClient
 from novel_factory.schemas import (
     ArcQaReport,
+    BookIntake,
     ChapterQaReport,
     ContinuityState,
     DeterministicValidationReport,
@@ -28,6 +30,7 @@ from novel_factory.schemas import (
 from novel_factory.storage import RunStorage
 from novel_factory.utils import (
     chapter_scene_numbers,
+    count_words,
     get_scene_card,
     plain_text_from_markdown,
     truncate_text,
@@ -46,6 +49,7 @@ class ProjectArtifacts:
     """Loaded project state required by pipeline phases."""
 
     synopsis: str
+    book_intake: BookIntake | None
     story_spec: StorySpec
     outline: Outline
     scene_cards: list[SceneCard]
@@ -64,25 +68,53 @@ class NovelPipeline:
         self.scene_judge = SceneJudge(self.llm, config)
         self.global_judge = GlobalJudge(self.llm, config)
 
-    def bootstrap(self, *, project: str, synopsis_file: Path) -> RunStorage:
+    def bootstrap(
+        self,
+        *,
+        project: str,
+        synopsis_file: Path | None = None,
+        intake_file: Path | None = None,
+    ) -> RunStorage:
         """Creates or resumes the planning artifacts for a project."""
 
         storage = RunStorage(self.config, project)
-        synopsis_text = synopsis_file.read_text(encoding=self.config.synopsis_encoding).strip()
-        if not synopsis_text:
-            raise ValueError(f"Synopsis file is empty: {synopsis_file}")
+        if synopsis_file is None and intake_file is None:
+            raise ValueError("Provide either synopsis_file or intake_file.")
+
+        book_intake: BookIntake | None = None
+        if intake_file is not None:
+            intake_text = intake_file.read_text(encoding=self.config.synopsis_encoding).strip()
+            if not intake_text:
+                raise ValueError(f"Intake file is empty: {intake_file}")
+            book_intake = parse_book_intake(intake_text)
+            storage.save_text(storage.intake_markdown_path, intake_text + "\n")
+            storage.save_model(storage.intake_json_path, book_intake)
+
+        if synopsis_file is not None:
+            synopsis_text = synopsis_file.read_text(encoding=self.config.synopsis_encoding).strip()
+            if not synopsis_text:
+                raise ValueError(f"Synopsis file is empty: {synopsis_file}")
+        else:
+            assert book_intake is not None
+            synopsis_text = book_intake.fields.get("synopsis", "").strip()
+            if not synopsis_text:
+                raise ValueError("Intake file does not contain a synopsis field.")
 
         storage.save_text(storage.synopsis_path, synopsis_text + "\n")
         storage.append_log(
             "bootstrap_started",
-            {"project": storage.project_slug, "synopsis_file": str(synopsis_file)},
+            {
+                "project": storage.project_slug,
+                "synopsis_file": str(synopsis_file) if synopsis_file else None,
+                "intake_file": str(intake_file) if intake_file else None,
+            },
         )
 
         if storage.story_spec_path.exists():
             story_spec = storage.load_model(storage.story_spec_path, StorySpec)
             logger.info("Loaded existing story_spec.json")
         else:
-            story_spec = self.generators.generate_story_spec(synopsis_text)
+            story_spec = self.generators.generate_story_spec(synopsis_text, book_intake=book_intake)
             storage.save_model(storage.story_spec_path, story_spec)
             storage.append_log("story_spec_generated", {"title": story_spec.title_working})
 
@@ -90,7 +122,11 @@ class NovelPipeline:
             outline = storage.load_model(storage.outline_path, Outline)
             logger.info("Loaded existing outline.json")
         else:
-            outline = self.generators.generate_outline(synopsis_text, story_spec)
+            outline = self.generators.generate_outline(
+                synopsis_text,
+                story_spec,
+                book_intake=book_intake,
+            )
             storage.save_model(storage.outline_path, outline)
             storage.append_log("outline_generated", {"chapters": len(outline.chapters)})
 
@@ -98,7 +134,12 @@ class NovelPipeline:
             scene_cards = storage.load_model(storage.scene_cards_path, SceneCardCollection).scene_cards
             logger.info("Loaded existing scene_cards.json")
         else:
-            scene_cards = self.generators.generate_scene_cards(synopsis_text, story_spec, outline)
+            scene_cards = self.generators.generate_scene_cards(
+                synopsis_text,
+                story_spec,
+                outline,
+                book_intake=book_intake,
+            )
             storage.save_model(
                 storage.scene_cards_path,
                 SceneCardCollection(scene_cards=scene_cards),
@@ -108,7 +149,11 @@ class NovelPipeline:
         if storage.initial_continuity_path.exists():
             initial_continuity = storage.load_model(storage.initial_continuity_path, ContinuityState)
         else:
-            initial_continuity = self.generators.generate_initial_continuity(story_spec, outline)
+            initial_continuity = self.generators.generate_initial_continuity(
+                story_spec,
+                outline,
+                book_intake=book_intake,
+            )
             storage.save_model(storage.initial_continuity_path, initial_continuity)
             storage.append_log("initial_continuity_generated", {})
 
@@ -159,6 +204,7 @@ class NovelPipeline:
             storage=storage,
             story_spec=artifacts.story_spec,
             outline=artifacts.outline,
+            book_intake=artifacts.book_intake,
             scene_card=scene_card,
             continuity_before=continuity_before,
             phase_label="draft",
@@ -168,6 +214,7 @@ class NovelPipeline:
                 scene_card=scene_card,
                 continuity_state=continuity_before,
                 recent_scene_summaries=self._recent_summaries(continuity_before),
+                book_intake=artifacts.book_intake,
                 rewrite_brief=rewrite_brief,
                 current_draft=current_draft,
             ),
@@ -190,10 +237,16 @@ class NovelPipeline:
         )
         return qa_report
 
-    def run_project(self, *, project: str, synopsis_file: Path) -> GlobalQaReport:
+    def run_project(
+        self,
+        *,
+        project: str,
+        synopsis_file: Path | None = None,
+        intake_file: Path | None = None,
+    ) -> GlobalQaReport:
         """Runs the full project from planning through QA and repair."""
 
-        storage = self.bootstrap(project=project, synopsis_file=synopsis_file)
+        storage = self.bootstrap(project=project, synopsis_file=synopsis_file, intake_file=intake_file)
         artifacts = self._load_project_artifacts(storage)
         self._rebuild_continuity_from_approved_scenes(
             storage=storage,
@@ -257,6 +310,7 @@ class NovelPipeline:
             story_spec=artifacts.story_spec,
             outline=artifacts.outline,
             manuscript_text=manuscript_text,
+            book_intake=artifacts.book_intake,
         )
         storage.save_model(storage.global_qa_path, report)
         storage.append_log("global_qa_completed", {"pass_fail": report.pass_fail})
@@ -266,7 +320,8 @@ class NovelPipeline:
         """Runs chapter and arc QA before the manuscript-level judge."""
 
         storage = RunStorage(self.config, project)
-        for round_number in range(0, 2):
+        max_editorial_rounds = 3
+        for round_number in range(0, max_editorial_rounds):
             artifacts = self._load_project_artifacts(storage)
             chapter_reports, arc_reports = self._judge_editorial_layers(
                 storage=storage,
@@ -275,7 +330,7 @@ class NovelPipeline:
             repair_targets = self._collect_editorial_repair_targets(chapter_reports, arc_reports)
             if not repair_targets:
                 return
-            if round_number >= 1:
+            if round_number >= max_editorial_rounds - 1:
                 raise RuntimeError(
                     "Editorial QA still failed after targeted scene repairs. Inspect chapter and arc QA reports."
                 )
@@ -323,6 +378,7 @@ class NovelPipeline:
                 storage=storage,
                 story_spec=artifacts.story_spec,
                 outline=artifacts.outline,
+                book_intake=artifacts.book_intake,
                 scene_card=scene_card,
                 continuity_before=continuity_before,
                 phase_label="repair",
@@ -334,6 +390,7 @@ class NovelPipeline:
                     current_scene=current_draft or current_scene,
                     global_qa_report=global_report,
                     rewrite_brief=rewrite_brief or target.rewrite_brief,
+                    book_intake=artifacts.book_intake,
                 ),
                 initial_rewrite_brief=target.rewrite_brief,
                 initial_current_draft=current_scene,
@@ -468,17 +525,34 @@ class NovelPipeline:
                 storage=storage,
                 story_spec=artifacts.story_spec,
                 outline=artifacts.outline,
+                book_intake=artifacts.book_intake,
                 scene_card=scene_card,
                 continuity_before=continuity_before,
                 phase_label="editorial_repair",
-                attempt_generator=lambda rewrite_brief, current_draft, scene_card=scene_card, continuity_before=continuity_before, current_scene=current_scene, target=target: self.generators.draft_scene(
+                attempt_generator=lambda rewrite_brief, current_draft, scene_card=scene_card, continuity_before=continuity_before, current_scene=current_scene, target=target: self.generators.repair_scene(
                     story_spec=artifacts.story_spec,
                     outline=artifacts.outline,
                     scene_card=scene_card,
                     continuity_state=continuity_before,
-                    recent_scene_summaries=self._recent_summaries(continuity_before),
+                    current_scene=current_draft or current_scene,
+                    global_qa_report=GlobalQaReport(
+                        pass_fail=False,
+                        hook_strength_score=3,
+                        midpoint_turn_score=3,
+                        climax_payoff_score=3,
+                        ending_payoff_score=3,
+                        relationship_progression_score=3,
+                        antagonist_pressure_score=3,
+                        continuity_score=3,
+                        emotional_aftershock_score=3,
+                        boredom_risk_score=3,
+                        voice_consistency_score=3,
+                        ai_smell_score=3,
+                        major_problems=[target.reason],
+                        repair_targets=[target],
+                    ),
                     rewrite_brief=rewrite_brief or target.rewrite_brief,
-                    current_draft=current_draft or current_scene,
+                    book_intake=artifacts.book_intake,
                 ),
                 initial_rewrite_brief=target.rewrite_brief,
                 initial_current_draft=current_scene,
@@ -502,8 +576,15 @@ class NovelPipeline:
         if not storage.synopsis_path.exists():
             raise RuntimeError("Project has not been bootstrapped yet.")
 
+        book_intake = None
+        if storage.intake_json_path.exists():
+            book_intake = storage.load_model(storage.intake_json_path, BookIntake)
+        elif storage.intake_markdown_path.exists():
+            book_intake = parse_book_intake(storage.load_text(storage.intake_markdown_path))
+
         return ProjectArtifacts(
             synopsis=storage.load_text(storage.synopsis_path).strip(),
+            book_intake=book_intake,
             story_spec=storage.load_model(storage.story_spec_path, StorySpec),
             outline=storage.load_model(storage.outline_path, Outline),
             scene_cards=storage.load_model(storage.scene_cards_path, SceneCardCollection).scene_cards,
@@ -565,9 +646,14 @@ class NovelPipeline:
         text = " ".join(
             [scene_card.counterforce_trace, scene_card.suspicion_delta, scene_card.pressure_source]
         ).lower()
-        return any(
+        if any(
             keyword in text
-            for keyword in ("marta", "conduct", "review", "suspicion", "extract", "audit", "inquiry", "question")
+            for keyword in ("marta", "conduct", "suspicion", "extract", "audit", "inquiry", "memo")
+        ):
+            return True
+        return "review" in text and any(
+            keyword in text
+            for keyword in ("conduct", "marta", "extract", "suspicion", "audit", "request", "trail")
         )
 
     def _scene_has_relationship_pressure(self, scene_card: SceneCard) -> bool:
@@ -587,6 +673,7 @@ class NovelPipeline:
         storage: RunStorage,
         story_spec: StorySpec,
         outline: Outline,
+        book_intake: BookIntake | None,
         scene_card: SceneCard,
         continuity_before: ContinuityState,
         phase_label: str,
@@ -602,7 +689,12 @@ class NovelPipeline:
         latest_validation: DeterministicValidationReport | None = None
 
         for attempt_number in range(0, self.config.max_scene_rewrites + 1):
-            scene_text = attempt_generator(rewrite_brief, current_draft).strip()
+            scene_text = self._generate_scene_text(
+                attempt_generator=attempt_generator,
+                rewrite_brief=rewrite_brief,
+                current_draft=current_draft,
+                scene_card=scene_card,
+            )
             storage.save_text(
                 storage.rewrite_path(
                     scene_card.scene_number,
@@ -624,6 +716,7 @@ class NovelPipeline:
                 continuity_state=continuity_before,
                 validation_report=validation_report,
                 scene_text=scene_text,
+                book_intake=book_intake,
             )
             merged_report = self._merge_validation_into_qa(
                 qa_report,
@@ -631,7 +724,8 @@ class NovelPipeline:
                 scene_card=scene_card,
                 total_scenes=story_spec.expected_scenes,
             )
-            storage.save_model(storage.scene_qa_path(scene_card.scene_number), merged_report)
+            if merged_report.pass_fail or not storage.has_approved_scene(scene_card.scene_number):
+                storage.save_model(storage.scene_qa_path(scene_card.scene_number), merged_report)
             storage.append_log(
                 "scene_attempt_completed",
                 {
@@ -663,6 +757,42 @@ class NovelPipeline:
         raise SceneApprovalError(
             f"Scene {scene_card.scene_number} failed QA after {self.config.max_scene_rewrites + 1} attempts."
         )
+
+    def _generate_scene_text(
+        self,
+        *,
+        attempt_generator: Callable[[str | None, str | None], str],
+        rewrite_brief: str | None,
+        current_draft: str | None,
+        scene_card: SceneCard,
+    ) -> str:
+        """Retries obviously truncated drafts before spending a rewrite attempt."""
+
+        latest_scene_text = ""
+        for _ in range(0, 3):
+            latest_scene_text = attempt_generator(rewrite_brief, current_draft).strip()
+            if not self._scene_text_looks_truncated(latest_scene_text, scene_card):
+                return latest_scene_text
+            logger.warning(
+                "Scene %s draft looked truncated; retrying generation within the same attempt.",
+                scene_card.scene_number,
+            )
+        return latest_scene_text
+
+    def _scene_text_looks_truncated(self, scene_text: str, scene_card: SceneCard) -> bool:
+        """Returns True when a scene draft is too short or ends like an accidental cutoff."""
+
+        if not scene_text:
+            return True
+        minimum_retry_floor = max(500, int(scene_card.target_words * 0.55))
+        if count_words(scene_text) < minimum_retry_floor:
+            return True
+        trimmed = scene_text.rstrip()
+        if not trimmed:
+            return True
+        if trimmed[-1] in ".!?\"'”’":
+            return False
+        return True
 
     def _merge_validation_into_qa(
         self,
@@ -698,6 +828,9 @@ class NovelPipeline:
             thresholds["voice_score"] = 4
         if self._scene_needs_relationship_cost(scene_card):
             thresholds["relationship_cost_score"] = 4
+        if self._scene_allows_quieter_opening_drive(scene_card):
+            thresholds["pacing_score"] = 3
+            thresholds["commercial_hook_score"] = 3
         for field_name, minimum_score in thresholds.items():
             if getattr(qa_report, field_name) < minimum_score:
                 threshold_failures.append(f"{field_name} fell below the acceptance threshold.")
@@ -779,6 +912,18 @@ class NovelPipeline:
         """Returns True when the scene should clear a higher interpersonal-cost bar."""
 
         text = " ".join([scene_card.relationship_delta, scene_card.secret_pressure, scene_card.cost_paid]).lower()
+        required_entities_text = " ".join(scene_card.required_entities).lower()
+        location_text = scene_card.location.lower()
+        if "off-page" in text:
+            return False
+        if scene_card.scene_type.lower() == "domestic fracture":
+            return True
+        if scene_card.pov_character.lower().startswith("elena"):
+            return True
+        if any(keyword in required_entities_text for keyword in ("elena", "wife", "husband")):
+            return True
+        if any(keyword in location_text for keyword in ("apartment", "home", "kitchen", "bedroom")):
+            return True
         relationship_patterns = (
             r"\belena\b",
             r"\bmarriage\b",
@@ -798,9 +943,18 @@ class NovelPipeline:
             r"\bleave him\b",
             r"\bleave her\b",
         )
-        return scene_card.pov_character.lower().startswith("elena") or any(
-            re.search(pattern, text) for pattern in relationship_patterns
-        )
+        return any(re.search(pattern, text) for pattern in relationship_patterns)
+
+    def _scene_allows_quieter_opening_drive(self, scene_card: SceneCard) -> bool:
+        """Returns True when a scene can trade some hook velocity for intimacy or set-up."""
+
+        lower_type = scene_card.scene_type.lower()
+        quiet_types = {
+            "domestic fracture",
+            "cover story",
+            "fallout",
+        }
+        return lower_type in quiet_types and not self._scene_has_counterforce(scene_card)
 
     def _approve_scene(
         self,

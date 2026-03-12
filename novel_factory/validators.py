@@ -43,6 +43,23 @@ RHETORICAL_PATTERNS = [
 QUOTE_RE = re.compile(r'"([^"]+)"')
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 QUOTED_TERM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"")
+ENTITY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
 
 
 class SceneValidator:
@@ -69,7 +86,7 @@ class SceneValidator:
         findings.extend(self._cliche_findings(scene_text))
         findings.extend(self._paragraph_findings(paragraphs))
         findings.extend(self._dialogue_ratio_findings(scene_text, word_count))
-        findings.extend(self._entity_findings(scene_text, scene_card, continuity_state))
+        findings.extend(self._entity_findings(scene_text, scene_card, continuity_state, story_spec))
         findings.extend(self._continuity_heuristics(scene_card, continuity_state))
         findings.extend(self._rhetorical_pattern_findings(scene_text))
         findings.extend(self._punctuation_findings(scene_text))
@@ -244,9 +261,11 @@ class SceneValidator:
         scene_text: str,
         scene_card: SceneCard,
         continuity_state: ContinuityState,
+        story_spec: StorySpec,
     ) -> list[ValidationFinding]:
         findings: list[ValidationFinding] = []
         lower_text = self._normalize_match_text(scene_text)
+        cast_names = {self._normalize_match_text(character.name) for character in story_spec.cast if character.name}
         forbidden_entities = list(scene_card.forbidden_entities) + list(continuity_state.disallowed_entities)
         forbidden_hits = [
             entity
@@ -265,7 +284,7 @@ class SceneValidator:
         missing_required = []
         abstract_required = []
         for entity in scene_card.required_entities:
-            if not entity or self._matches_required_entity(entity, lower_text):
+            if not entity or self._matches_required_entity(entity, lower_text, cast_names=cast_names):
                 continue
             if self._is_abstract_required_entity(entity):
                 abstract_required.append(entity)
@@ -434,15 +453,27 @@ class SceneValidator:
             "demand",
             "arrangement",
             "ritual",
+            "details",
+            "text",
         )
         return any(marker in lower_entity for marker in abstract_markers)
 
-    def _matches_required_entity(self, entity: str, lower_text: str) -> bool:
+    def _matches_required_entity(
+        self,
+        entity: str,
+        lower_text: str,
+        *,
+        cast_names: set[str],
+    ) -> bool:
         """Returns True when a required entity or one of its alternatives is present."""
 
         lower_entity = self._normalize_match_text(entity)
         candidate_entities = self._entity_match_candidates(lower_entity)
+        if lower_entity in cast_names:
+            candidate_entities.extend(self._cast_name_candidates(lower_entity))
         if any(candidate in lower_text for candidate in candidate_entities):
+            return True
+        if any(self._match_entity_by_tokens(candidate, lower_text) for candidate in candidate_entities):
             return True
         quoted_terms = [term for pair in QUOTED_TERM_RE.findall(lower_entity) for term in pair if term]
         if quoted_terms and any(term in lower_text for term in quoted_terms):
@@ -516,6 +547,29 @@ class SceneValidator:
             for candidate in (request_set, request_form):
                 if candidate and candidate not in candidates:
                     candidates.append(candidate)
+        return candidates
+
+    def _match_entity_by_tokens(self, entity: str, lower_text: str) -> bool:
+        """Returns True when a multi-word entity is naturally realized across nearby tokens."""
+
+        entity_tokens = [
+            token
+            for token in WORD_RE.findall(entity)
+            if len(token) > 2 and token not in ENTITY_STOPWORDS
+        ]
+        if len(entity_tokens) < 2:
+            return False
+        text_tokens = set(WORD_RE.findall(lower_text))
+        return all(token in text_tokens for token in entity_tokens)
+
+    def _cast_name_candidates(self, entity: str) -> list[str]:
+        """Returns looser match candidates for cast-member names."""
+
+        parts = [part for part in entity.split() if part]
+        candidates: list[str] = []
+        if len(parts) >= 2:
+            candidates.append(parts[0])
+            candidates.append(parts[-1])
         return candidates
 
     def _normalize_match_text(self, value: str) -> str:

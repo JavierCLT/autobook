@@ -4,10 +4,13 @@ Novel Factory is a production-minded Python CLI that turns a long synopsis into 
 
 The repository is optimized for output quality rather than speed or token efficiency. It uses the official OpenAI Python SDK, the Responses API, and structured outputs for planning and QA artifacts.
 
+The pipeline can now take either a plain synopsis file or a richer markdown intake file based on [BOOK_INTAKE_TEMPLATE.md](./BOOK_INTAKE_TEMPLATE.md). When an intake file is provided, its explicit market, relationship, style, structural, and non-negotiable constraints are threaded into planning and drafting.
+
 ## What It Produces
 
 Each project is stored under `runs/<project_slug>/` and includes:
 
+- `book_intake.md` and `book_intake.json` when an intake file is used
 - `input_synopsis.md`
 - `story_spec.json`
 - `outline.json`
@@ -26,7 +29,7 @@ Each project is stored under `runs/<project_slug>/` and includes:
 ## Pipeline
 
 1. `bootstrap`
-   Reads the synopsis and generates `StorySpec`, `Outline`, `SceneCards`, and initial continuity.
+   Reads either a synopsis or a structured intake file and generates `StorySpec`, `Outline`, `SceneCards`, and initial continuity.
 2. `draft-scene`
    Builds scene context, drafts a scene, runs deterministic validators, runs scene QA, and rewrites up to two times if needed.
 3. `run-project`
@@ -79,10 +82,16 @@ NOVEL_FACTORY_DEFAULT_MARKET_POSITION=adult thriller
 
 ## Usage
 
-### Bootstrap a project
+### Bootstrap a project from a synopsis
 
 ```bash
 python main.py bootstrap --project my_book --synopsis-file synopsis.md
+```
+
+### Bootstrap a project from an intake template
+
+```bash
+python main.py bootstrap --project my_book --intake-file my_book_intake.md
 ```
 
 ### Draft one scene
@@ -97,10 +106,16 @@ Force a rewrite of an already approved scene:
 python main.py draft-scene --project my_book --scene-index 5 --force
 ```
 
-### Run the full project
+### Run the full project from a synopsis
 
 ```bash
 python main.py run-project --project my_book --synopsis-file synopsis.md
+```
+
+### Run the full project from an intake template
+
+```bash
+python main.py run-project --project my_book --intake-file my_book_intake.md
 ```
 
 ### Run manuscript-level QA
@@ -118,6 +133,7 @@ python main.py repair-project --project my_book
 ## Checkpointing And Resume Behavior
 
 - Planning artifacts are saved once and reused on later runs.
+- If an intake file is used, both the raw markdown and parsed JSON are saved with the run.
 - Approved scenes are saved only after they pass deterministic validation and model QA.
 - Failed attempts are preserved in `rewrites/`.
 - `continuity_state.json` is updated after each approved scene.
@@ -132,9 +148,11 @@ If a scene fails repeatedly, the run stops without saving it into `scenes/`. Fix
 ```text
 .
 |- main.py
+|- BOOK_INTAKE_TEMPLATE.md
 |- novel_factory/
 |  |- config.py
 |  |- generators.py
+|  |- intake.py
 |  |- judges.py
 |  |- llm.py
 |  |- pipeline.py
@@ -154,3 +172,4 @@ If a scene fails repeatedly, the run stops without saving it into `scenes/`. Fix
 - The code uses `client.responses.parse(...)` for structured artifacts and QA models.
 - The pipeline reads `OPENAI_API_KEY` from environment variables through `python-dotenv`.
 - Structured planning artifacts use Pydantic models to keep the run restartable and inspectable.
+- Intake-template runs still produce `input_synopsis.md`; the synopsis is either read directly from `--synopsis-file` or extracted from the `synopsis:` field inside the intake file.

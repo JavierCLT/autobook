@@ -10,7 +10,10 @@ from rich.console import Console
 from novel_factory.config import configure_logging, load_config
 from novel_factory.pipeline import NovelPipeline
 
-app = typer.Typer(add_completion=False, help="Generate thriller manuscripts from long synopses.")
+app = typer.Typer(
+    add_completion=False,
+    help="Generate thriller manuscripts from long synopses or structured intake templates.",
+)
 console = Console()
 
 
@@ -21,15 +24,24 @@ def build_pipeline() -> NovelPipeline:
     return NovelPipeline(load_config(require_api_key=True))
 
 
+def _require_story_input(synopsis_file: Path | None, intake_file: Path | None) -> None:
+    """Ensures a planning command received either a synopsis or intake file."""
+
+    if synopsis_file is None and intake_file is None:
+        raise typer.BadParameter("Provide either --synopsis-file or --intake-file.")
+
+
 @app.command("bootstrap")
 def bootstrap_command(
     project: str = typer.Option(..., help="Project slug or label."),
-    synopsis_file: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
+    synopsis_file: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
+    intake_file: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
 ) -> None:
     """Creates StorySpec, Outline, SceneCards, and initial continuity artifacts."""
 
+    _require_story_input(synopsis_file, intake_file)
     pipeline = build_pipeline()
-    storage = pipeline.bootstrap(project=project, synopsis_file=synopsis_file)
+    storage = pipeline.bootstrap(project=project, synopsis_file=synopsis_file, intake_file=intake_file)
     console.print(f"Bootstrapped project at {storage.root}")
 
 
@@ -49,12 +61,14 @@ def draft_scene_command(
 @app.command("run-project")
 def run_project_command(
     project: str = typer.Option(..., help="Project slug or label."),
-    synopsis_file: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
+    synopsis_file: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
+    intake_file: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
 ) -> None:
     """Runs planning, drafting, assembly, global QA, and repairs."""
 
+    _require_story_input(synopsis_file, intake_file)
     pipeline = build_pipeline()
-    report = pipeline.run_project(project=project, synopsis_file=synopsis_file)
+    report = pipeline.run_project(project=project, synopsis_file=synopsis_file, intake_file=intake_file)
     console.print(f"Project complete. Global QA pass_fail={report.pass_fail}")
 
 

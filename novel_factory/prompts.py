@@ -83,8 +83,14 @@ def story_spec_user_prompt(
     audience: str,
     rating_ceiling: str,
     market_position: str,
+    intake_guidance: str | None = None,
 ) -> str:
     """Builds the story-spec prompt."""
+    intake_block = (
+        f"\n\nBook intake guidance:\n{intake_guidance}"
+        if intake_guidance
+        else ""
+    )
     return f"""
 Create a locked StorySpec from the synopsis below.
 
@@ -105,14 +111,22 @@ Requirements:
 - Put explicit audience-appropriate bans in banned_content.
 - Continuity rules should be operational and testable later.
 - The one_sentence_promise should sell both the external thriller engine and the intimate personal cost.
+- If the book intake guidance supplies explicit values, scene obligations, rituals, style bans, or continuity rules, treat them as higher-priority constraints than inference from synopsis alone unless they conflict with safety or schema compatibility.
 
 Synopsis:
 {synopsis}
+
+{intake_block}
 """.strip()
 
 
-def outline_user_prompt(synopsis: str, story_spec: StorySpec) -> str:
+def outline_user_prompt(synopsis: str, story_spec: StorySpec, intake_guidance: str | None = None) -> str:
     """Builds the outline prompt."""
+    intake_block = (
+        f"\n\nBook intake guidance:\n{intake_guidance}"
+        if intake_guidance
+        else ""
+    )
     return f"""
 Create a detailed Outline from the locked StorySpec and synopsis.
 
@@ -125,17 +139,30 @@ Requirements:
 - Every 2-3 scenes, advance at least one of these engines: adversarial pressure, relationship deterioration, moral compromise.
 - Do not let the middle become procedural drift. Each chapter should sharpen danger, intimacy, or irreversible consequence.
 - Make sure the hunter / pursuer / institutional-counterforce grows more intelligent over time.
+- Preserve explicit intake obligations around relationship residue, must-have scenes, ending shape, motifs, and style pressure.
 
 StorySpec:
 {serialise_model(story_spec)}
 
 Synopsis:
 {synopsis}
+
+{intake_block}
 """.strip()
 
 
-def scene_cards_user_prompt(synopsis: str, story_spec: StorySpec, outline: Outline) -> str:
+def scene_cards_user_prompt(
+    synopsis: str,
+    story_spec: StorySpec,
+    outline: Outline,
+    intake_guidance: str | None = None,
+) -> str:
     """Builds the scene-card prompt."""
+    intake_block = (
+        f"\n\nBook intake guidance:\n{intake_guidance}"
+        if intake_guidance
+        else ""
+    )
     return f"""
 Expand the locked outline into exactly {story_spec.expected_scenes} scene cards.
 
@@ -169,6 +196,7 @@ Requirements:
 - By scene 6 at latest, the counterforce must leave an on-page trace, rumor, memo, review footprint, or other concrete shadow.
 - If a scene could be paraphrased as competent analysis rather than dramatized conflict, redesign it before returning it.
 - Keep target_words between 900 and 2200 unless the dramatic function strongly justifies otherwise.
+- If the intake guidance names a shared ritual, object system, or administrative consequence, make sure the scene cards place those details where they can do real dramatic work.
 
 StorySpec:
 {serialise_model(story_spec)}
@@ -178,11 +206,22 @@ Outline:
 
 Synopsis:
 {synopsis}
+
+{intake_block}
 """.strip()
 
 
-def initial_continuity_user_prompt(story_spec: StorySpec, outline: Outline) -> str:
+def initial_continuity_user_prompt(
+    story_spec: StorySpec,
+    outline: Outline,
+    intake_guidance: str | None = None,
+) -> str:
     """Builds the prompt for the initial continuity state."""
+    intake_block = (
+        f"\n\nBook intake guidance:\n{intake_guidance}"
+        if intake_guidance
+        else ""
+    )
     return f"""
 Create the initial ContinuityState for this project before scene 1 is drafted.
 
@@ -203,6 +242,8 @@ StorySpec:
 
 Outline:
 {serialise_model(outline)}
+
+{intake_block}
 """.strip()
 
 
@@ -222,6 +263,7 @@ def scene_draft_system_prompt(story_spec: StorySpec) -> str:
 
 
 def scene_draft_user_prompt(
+    intake_guidance: str | None,
     story_brief: str,
     chapter_brief: str,
     scene_card: SceneCard,
@@ -234,6 +276,7 @@ def scene_draft_user_prompt(
     summaries_block = "\n".join(f"- {summary}" for summary in recent_scene_summaries) or "- None yet"
     rewrite_block = rewrite_brief or "None. Draft this cleanly on the first pass."
     current_draft_block = current_draft or "No prior draft."
+    intake_block = f"\n\nIntake guidance:\n{intake_guidance}" if intake_guidance else ""
 
     return f"""
 Write Scene {scene_card.scene_number} of the novel.
@@ -297,6 +340,8 @@ Avoid:
 
 Story brief:
 {story_brief}
+
+{intake_block}
 
 Relevant chapter brief:
 {chapter_brief}
@@ -380,8 +425,10 @@ def scene_qa_user_prompt(
     continuity_state: ContinuityState,
     validation_report: DeterministicValidationReport,
     scene_text: str,
+    intake_guidance: str | None = None,
 ) -> str:
     """Builds the prompt for scene-level QA."""
+    intake_block = f"\n\nBook intake guidance:\n{intake_guidance}" if intake_guidance else ""
     return f"""
 Evaluate the drafted scene against the contract below.
 
@@ -399,6 +446,8 @@ Deterministic validation report:
 
 Drafted scene:
 {scene_text}
+
+{intake_block}
 """.strip()
 
 
@@ -503,8 +552,10 @@ def global_qa_user_prompt(
     story_spec: StorySpec,
     outline: Outline,
     manuscript_text: str,
+    intake_guidance: str | None = None,
 ) -> str:
     """Builds the prompt for global QA."""
+    intake_block = f"\n\nBook intake guidance:\n{intake_guidance}" if intake_guidance else ""
     return f"""
 Evaluate the complete manuscript.
 
@@ -522,6 +573,8 @@ Outline:
 
 Manuscript:
 {manuscript_text}
+
+{intake_block}
 """.strip()
 
 
@@ -533,8 +586,10 @@ def repair_scene_user_prompt(
     current_scene: str,
     global_qa_report: GlobalQaReport,
     rewrite_brief: str,
+    intake_guidance: str | None = None,
 ) -> str:
     """Builds a scene repair prompt triggered by global QA."""
+    intake_block = f"\n\nBook intake guidance:\n{intake_guidance}" if intake_guidance else ""
     return f"""
 Repair an approved scene with the minimum necessary changes.
 
@@ -566,4 +621,6 @@ Outline:
 
 StorySpec:
 {serialise_model(story_spec)}
+
+{intake_block}
 """.strip()

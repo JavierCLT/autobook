@@ -5,18 +5,24 @@ from __future__ import annotations
 import re
 
 from novel_factory.config import AppConfig
+from novel_factory.intake import (
+    build_drafting_guidance,
+    build_planning_guidance,
+    resolve_planning_defaults,
+)
 from novel_factory.llm import OpenAIResponsesClient
 from novel_factory.prompts import (
     initial_continuity_user_prompt,
+    outline_user_prompt,
     planning_system_prompt,
     repair_scene_user_prompt,
     scene_cards_user_prompt,
     scene_draft_system_prompt,
     scene_draft_user_prompt,
     story_spec_user_prompt,
-    outline_user_prompt,
 )
 from novel_factory.schemas import (
+    BookIntake,
     ContinuityState,
     Outline,
     SceneCard,
@@ -33,23 +39,34 @@ class NovelGenerator:
         self.llm = llm
         self.config = config
 
-    def generate_story_spec(self, synopsis: str) -> StorySpec:
+    def generate_story_spec(self, synopsis: str, book_intake: BookIntake | None = None) -> StorySpec:
         """Creates the locked story specification from the synopsis."""
 
+        planning_defaults = resolve_planning_defaults(
+            intake=book_intake,
+            default_audience=self.config.default_audience,
+            default_rating_ceiling=self.config.default_rating_ceiling,
+            default_market_position=self.config.default_market_position,
+            default_target_words=self.config.target_words,
+            default_expected_chapters=self.config.target_chapters,
+            default_expected_scenes=self.config.target_scenes,
+        )
+        intake_guidance = build_planning_guidance(book_intake)
         return self.llm.structured(
             system_prompt=planning_system_prompt(
-                audience=self.config.default_audience,
-                rating_ceiling=self.config.default_rating_ceiling,
-                market_position=self.config.default_market_position,
+                audience=planning_defaults.audience,
+                rating_ceiling=planning_defaults.rating_ceiling,
+                market_position=planning_defaults.market_position,
             ),
             user_prompt=story_spec_user_prompt(
                 synopsis=synopsis,
-                target_words=self.config.target_words,
-                chapters=self.config.target_chapters,
-                scenes=self.config.target_scenes,
-                audience=self.config.default_audience,
-                rating_ceiling=self.config.default_rating_ceiling,
-                market_position=self.config.default_market_position,
+                target_words=planning_defaults.target_words,
+                chapters=planning_defaults.expected_chapters,
+                scenes=planning_defaults.expected_scenes,
+                audience=planning_defaults.audience,
+                rating_ceiling=planning_defaults.rating_ceiling,
+                market_position=planning_defaults.market_position,
+                intake_guidance=intake_guidance,
             ),
             schema=StorySpec,
             task_name="story_spec",
@@ -59,7 +76,12 @@ class NovelGenerator:
             verbosity="low",
         )
 
-    def generate_outline(self, synopsis: str, story_spec: StorySpec) -> Outline:
+    def generate_outline(
+        self,
+        synopsis: str,
+        story_spec: StorySpec,
+        book_intake: BookIntake | None = None,
+    ) -> Outline:
         """Creates the macro outline from the locked story spec."""
 
         return self.llm.structured(
@@ -68,7 +90,11 @@ class NovelGenerator:
                 rating_ceiling=story_spec.rating_ceiling,
                 market_position=story_spec.subgenre or story_spec.genre,
             ),
-            user_prompt=outline_user_prompt(synopsis=synopsis, story_spec=story_spec),
+            user_prompt=outline_user_prompt(
+                synopsis=synopsis,
+                story_spec=story_spec,
+                intake_guidance=build_planning_guidance(book_intake),
+            ),
             schema=Outline,
             task_name="outline",
             reasoning_effort=self.config.reasoning.planning,
@@ -82,6 +108,7 @@ class NovelGenerator:
         synopsis: str,
         story_spec: StorySpec,
         outline: Outline,
+        book_intake: BookIntake | None = None,
     ) -> list[SceneCard]:
         """Creates and normalizes all scene cards."""
 
@@ -95,6 +122,7 @@ class NovelGenerator:
                 synopsis=synopsis,
                 story_spec=story_spec,
                 outline=outline,
+                intake_guidance=build_planning_guidance(book_intake),
             ),
             schema=SceneCardCollection,
             task_name="scene_cards",
@@ -109,6 +137,7 @@ class NovelGenerator:
         self,
         story_spec: StorySpec,
         outline: Outline,
+        book_intake: BookIntake | None = None,
     ) -> ContinuityState:
         """Creates the initial continuity state."""
 
@@ -118,7 +147,11 @@ class NovelGenerator:
                 rating_ceiling=story_spec.rating_ceiling,
                 market_position=story_spec.subgenre or story_spec.genre,
             ),
-            user_prompt=initial_continuity_user_prompt(story_spec=story_spec, outline=outline),
+            user_prompt=initial_continuity_user_prompt(
+                story_spec=story_spec,
+                outline=outline,
+                intake_guidance=build_planning_guidance(book_intake),
+            ),
             schema=ContinuityState,
             task_name="initial_continuity",
             reasoning_effort=self.config.reasoning.planning,
@@ -135,6 +168,7 @@ class NovelGenerator:
         scene_card: SceneCard,
         continuity_state: ContinuityState,
         recent_scene_summaries: list[str],
+        book_intake: BookIntake | None = None,
         rewrite_brief: str | None = None,
         current_draft: str | None = None,
     ) -> str:
@@ -147,6 +181,7 @@ class NovelGenerator:
         return self.llm.text(
             system_prompt=scene_draft_system_prompt(story_spec),
             user_prompt=scene_draft_user_prompt(
+                intake_guidance=build_drafting_guidance(book_intake),
                 story_brief=story_brief,
                 chapter_brief=chapter_brief,
                 scene_card=scene_card,
@@ -301,6 +336,7 @@ class NovelGenerator:
         current_scene: str,
         global_qa_report,
         rewrite_brief: str,
+        book_intake: BookIntake | None = None,
     ) -> str:
         """Runs a targeted repair on an already approved scene."""
 
@@ -314,6 +350,7 @@ class NovelGenerator:
                 current_scene=current_scene,
                 global_qa_report=global_qa_report,
                 rewrite_brief=rewrite_brief,
+                intake_guidance=build_drafting_guidance(book_intake),
             ),
             task_name=f"repair_scene_{scene_card.scene_number:02d}",
             reasoning_effort=self.config.reasoning.repair,

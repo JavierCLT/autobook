@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from novel_factory.config import AppConfig
+from novel_factory.intake import build_drafting_guidance, build_planning_guidance
 from novel_factory.llm import OpenAIResponsesClient
 from novel_factory.prompts import (
     arc_qa_system_prompt,
@@ -16,6 +17,7 @@ from novel_factory.prompts import (
 )
 from novel_factory.schemas import (
     ArcQaReport,
+    BookIntake,
     ChapterQaReport,
     ContinuityState,
     DeterministicValidationReport,
@@ -42,6 +44,7 @@ class SceneJudge:
         continuity_state: ContinuityState,
         validation_report: DeterministicValidationReport,
         scene_text: str,
+        book_intake: BookIntake | None = None,
     ) -> SceneQaReport:
         """Scores and judges a drafted scene."""
 
@@ -53,6 +56,7 @@ class SceneJudge:
                 continuity_state=continuity_state,
                 validation_report=validation_report,
                 scene_text=scene_text,
+                intake_guidance=build_drafting_guidance(book_intake),
             ),
             schema=SceneQaReport,
             task_name=f"scene_qa_{scene_card.scene_number:02d}",
@@ -76,6 +80,7 @@ class GlobalJudge:
         story_spec: StorySpec,
         outline: Outline,
         manuscript_text: str,
+        book_intake: BookIntake | None = None,
     ) -> GlobalQaReport:
         """Scores and judges the assembled manuscript."""
 
@@ -85,6 +90,7 @@ class GlobalJudge:
                 story_spec=story_spec,
                 outline=outline,
                 manuscript_text=manuscript_text,
+                intake_guidance=build_planning_guidance(book_intake, max_chars=8_000),
             ),
             schema=GlobalQaReport,
             task_name="global_qa",

@@ -54,6 +54,14 @@ class RunStorage:
         return self.root / "input_synopsis.md"
 
     @property
+    def intake_markdown_path(self) -> Path:
+        return self.root / "book_intake.md"
+
+    @property
+    def intake_json_path(self) -> Path:
+        return self.root / "book_intake.json"
+
+    @property
     def story_spec_path(self) -> Path:
         return self.root / "story_spec.json"
 
